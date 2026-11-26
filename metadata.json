@@ -1,0 +1,6 @@
+{
+  "name": "K-CHART VIEW",
+  "description": "Professional real-time financial charting terminal with live crypto, stocks, forex, indicators, drawing tools, alerts, and multi-chart layouts.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
