@@ -45,17 +45,30 @@ class ProxyMarketDataProvider implements DataProvider {
   subscribe(symbol: string, interval: Timeframe, callbacks: SubscribeCallbacks): () => void {
     let cancelled = false;
     let lastCandle: Candle | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
 
-    // Fetch latest quote via backend proxy every 5 seconds for live updates
+    const scheduleNext = (delayMs: number) => {
+      if (cancelled) return;
+      timer = setTimeout(poll, delayMs);
+    };
+
+    // Poll quote via backend proxy every 20s (stays within Twelve Data 8 credits/min free tier)
     const poll = async () => {
       if (cancelled) return;
+      let nextDelay = 20000;
       try {
         const url = new URL('/api/market/quote', window.location.origin);
         url.searchParams.set('provider', this.id);
         url.searchParams.set('symbol', symbol);
         const res = await fetch(url.toString());
         if (!res.ok) {
-          callbacks.onStatus(res.status === 429 ? 'reconnecting' : 'offline');
+          if (res.status === 429) {
+            callbacks.onStatus('reconnecting');
+            nextDelay = 60000;
+          } else {
+            callbacks.onStatus('offline');
+          }
+          scheduleNext(nextDelay);
           return;
         }
         const quote = (await res.json()) as {
@@ -65,7 +78,10 @@ class ProxyMarketDataProvider implements DataProvider {
           low: number;
           volume: number;
         };
-        if (!quote.price || cancelled) return;
+        if (!quote.price || cancelled) {
+          scheduleNext(nextDelay);
+          return;
+        }
         callbacks.onStatus('live');
         const nowSec = Math.floor(Date.now() / 1000);
         const bucket = this.alignBucket(nowSec, interval);
@@ -91,14 +107,14 @@ class ProxyMarketDataProvider implements DataProvider {
       } catch {
         if (!cancelled) callbacks.onStatus('reconnecting');
       }
+      scheduleNext(nextDelay);
     };
 
-    const timer = setInterval(poll, 5000);
-    poll();
+    scheduleNext(5000);
 
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      if (timer) clearTimeout(timer);
       callbacks.onStatus('offline');
     };
   }
@@ -123,10 +139,11 @@ class ProxyMarketDataProvider implements DataProvider {
   }
 
   async searchSymbols(query: string): Promise<SymbolInfo[]> {
-    if (!query.trim()) return [];
+    const trimmed = query.trim();
+    if (trimmed.length < 2) return [];
     const url = new URL('/api/market/search', window.location.origin);
     url.searchParams.set('provider', this.id);
-    url.searchParams.set('q', query.trim());
+    url.searchParams.set('q', trimmed);
     const res = await fetch(url.toString());
     if (!res.ok) return [];
     const data = (await res.json()) as { results?: SymbolInfo[] };

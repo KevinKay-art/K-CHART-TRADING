@@ -28,6 +28,39 @@ interface ExchangeCache {
 }
 
 let exchangeInfoCache: ExchangeCache | null = null;
+const marketResponseCache = new Map<string, ExchangeCache>();
+
+function getCachedResponse<T>(key: string): T | null {
+  const entry = marketResponseCache.get(key);
+  if (!entry) return null;
+  if (entry.expiresAt <= Date.now()) {
+    marketResponseCache.delete(key);
+    return null;
+  }
+  return entry.data as T;
+}
+
+function setCachedResponse(key: string, data: unknown, ttlMs: number): void {
+  if (marketResponseCache.size > 500) {
+    const oldestKey = marketResponseCache.keys().next().value;
+    if (oldestKey) marketResponseCache.delete(oldestKey);
+  }
+  marketResponseCache.set(key, { expiresAt: Date.now() + ttlMs, data });
+}
+
+const KNOWN_TD_PAIRS = new Set([
+  'XAUUSD', 'XAGUSD', 'XPTUSD', 'XPDUSD',
+  'EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'USDCAD', 'USDCHF', 'NZDUSD',
+  'EURGBP', 'EURJPY', 'GBPJPY', 'EURCHF', 'AUDJPY', 'EURAUD', 'CADJPY',
+]);
+
+function normalizeTwelveDataSymbol(symbol: string): string {
+  const upper = symbol.trim().toUpperCase();
+  if (!upper.includes('/') && upper.length === 6 && KNOWN_TD_PAIRS.has(upper)) {
+    return `${upper.slice(0, 3)}/${upper.slice(3)}`;
+  }
+  return symbol.trim();
+}
 
 function sanitizeParam(value: unknown, regex: RegExp, fallback = ''): string {
   if (typeof value !== 'string') return fallback;
@@ -249,11 +282,19 @@ app.get('/api/market/history', async (req, res) => {
     return;
   }
 
+  const cacheKey = `history:${provider}:${symbol.toUpperCase()}:${interval}:${limit}:${req.query.endTime || 'latest'}`;
+  const cached = getCachedResponse<{ candles: unknown[] }>(cacheKey);
+  if (cached) {
+    res.json(cached);
+    return;
+  }
+
   try {
     if (provider === 'twelvedata') {
+      const tdSymbol = normalizeTwelveDataSymbol(symbol);
       const tdInterval = mapIntervalToTwelveData(interval);
       const url = new URL('https://api.twelvedata.com/time_series');
-      url.searchParams.set('symbol', symbol);
+      url.searchParams.set('symbol', tdSymbol);
       url.searchParams.set('interval', tdInterval);
       url.searchParams.set('outputsize', String(Math.min(limit, 5000)));
       url.searchParams.set('apikey', apiKey);
@@ -268,7 +309,9 @@ app.get('/api/market/history', async (req, res) => {
         values?: Array<{ datetime: string; open: string; high: string; low: string; close: string; volume?: string }>;
       };
       if (!upstream.ok || data.status === 'error') {
-        res.status(data.code === 429 ? 429 : 400).json({ error: data.message || 'Twelve Data request failed' });
+        res.status(data.code === 429 || upstream.status === 429 ? 429 : 400).json({
+          error: data.message || 'Twelve Data request failed',
+        });
         return;
       }
       const candles = (data.values || [])
@@ -282,7 +325,9 @@ app.get('/api/market/history', async (req, res) => {
         }))
         .filter((c) => Number.isFinite(c.time) && Number.isFinite(c.close))
         .reverse();
-      res.json({ candles });
+      const payload = { candles };
+      setCachedResponse(cacheKey, payload, req.query.endTime ? 300_000 : 25_000);
+      res.json(payload);
       return;
     }
 
@@ -307,6 +352,67 @@ app.get('/api/market/history', async (req, res) => {
         error?: string;
       };
       if (!upstream.ok || data.error) {
+        // Finnhub free keys restrict /stock/candle; fall back to Polygon or Twelve Data if configured
+        const polyKey = getProviderKey('polygon');
+        if (polyKey) {
+          const { multiplier, timespan, daysBack } = mapIntervalToPolygon(interval);
+          const toDate = new Date(endTimeSec * 1000).toISOString().slice(0, 10);
+          const fromDate = new Date((endTimeSec - daysBack * 86400) * 1000).toISOString().slice(0, 10);
+          const polyUrl = new URL(`https://api.polygon.io/v2/aggs/ticker/${encodeURIComponent(symbol.toUpperCase())}/range/${multiplier}/${timespan}/${fromDate}/${toDate}`);
+          polyUrl.searchParams.set('adjusted', 'true');
+          polyUrl.searchParams.set('sort', 'asc');
+          polyUrl.searchParams.set('limit', String(Math.min(limit, 5000)));
+          polyUrl.searchParams.set('apiKey', polyKey);
+          const polyRes = await fetchWithTimeout(polyUrl.toString());
+          const polyData = (await polyRes.json()) as {
+            status?: string;
+            results?: Array<{ t: number; o: number; h: number; l: number; c: number; v?: number }>;
+          };
+          if (polyRes.ok && polyData.status !== 'ERROR' && Array.isArray(polyData.results)) {
+            const candles = polyData.results.map((r) => ({
+              time: Math.floor(r.t / 1000),
+              open: r.o,
+              high: r.h,
+              low: r.l,
+              close: r.c,
+              volume: r.v ?? 0,
+            }));
+            const payload = { candles };
+            setCachedResponse(cacheKey, payload, 25_000);
+            res.json(payload);
+            return;
+          }
+        }
+        const tdKey = getProviderKey('twelvedata');
+        if (tdKey) {
+          const tdUrl = new URL('https://api.twelvedata.com/time_series');
+          tdUrl.searchParams.set('symbol', normalizeTwelveDataSymbol(symbol));
+          tdUrl.searchParams.set('interval', mapIntervalToTwelveData(interval));
+          tdUrl.searchParams.set('outputsize', String(Math.min(limit, 5000)));
+          tdUrl.searchParams.set('apikey', tdKey);
+          const tdRes = await fetchWithTimeout(tdUrl.toString());
+          const tdData = (await tdRes.json()) as {
+            status?: string;
+            values?: Array<{ datetime: string; open: string; high: string; low: string; close: string; volume?: string }>;
+          };
+          if (tdRes.ok && tdData.status !== 'error' && Array.isArray(tdData.values)) {
+            const candles = tdData.values
+              .map((v) => ({
+                time: Math.floor(new Date(v.datetime.includes('T') ? v.datetime : `${v.datetime.replace(' ', 'T')}Z`).getTime() / 1000),
+                open: Number(v.open),
+                high: Number(v.high),
+                low: Number(v.low),
+                close: Number(v.close),
+                volume: Number(v.volume || 0),
+              }))
+              .filter((c) => Number.isFinite(c.time) && Number.isFinite(c.close))
+              .reverse();
+            const payload = { candles };
+            setCachedResponse(cacheKey, payload, 25_000);
+            res.json(payload);
+            return;
+          }
+        }
         res.status(upstream.status || 400).json({ error: data.error || 'Finnhub request failed' });
         return;
       }
@@ -322,7 +428,9 @@ app.get('/api/market/history', async (req, res) => {
         close: data.c?.[idx] ?? 0,
         volume: data.v?.[idx] ?? 0,
       }));
-      res.json({ candles });
+      const payload = { candles };
+      setCachedResponse(cacheKey, payload, 25_000);
+      res.json(payload);
       return;
     }
 
@@ -380,14 +488,22 @@ app.get('/api/market/search', async (req, res) => {
     return;
   }
 
+  const searchCacheKey = `search:${provider}:${query.toLowerCase()}`;
+  const cachedSearch = getCachedResponse<{ results: unknown[] }>(searchCacheKey);
+  if (cachedSearch) {
+    res.json(cachedSearch);
+    return;
+  }
+
   try {
     if (provider === 'twelvedata') {
       const url = new URL('https://api.twelvedata.com/symbol_search');
-      url.searchParams.set('symbol', query);
+      url.searchParams.set('symbol', normalizeTwelveDataSymbol(query));
       url.searchParams.set('outputsize', '25');
       url.searchParams.set('apikey', apiKey);
       const upstream = await fetchWithTimeout(url.toString());
       const data = (await upstream.json()) as {
+        status?: string;
         data?: Array<{ symbol: string; instrument_name: string; exchange: string; instrument_type: string }>;
       };
       const results = (data.data || []).map((item) => ({
@@ -404,7 +520,11 @@ app.get('/api/market/search', async (req, res) => {
           : 'stock',
         provider: 'twelvedata',
       }));
-      res.json({ results });
+      const payload = { results };
+      if (upstream.ok && data.status !== 'error') {
+        setCachedResponse(searchCacheKey, payload, 300_000);
+      }
+      res.json(payload);
       return;
     }
 
@@ -470,13 +590,23 @@ app.get('/api/market/quote', async (req, res) => {
     return;
   }
 
+  const quoteCacheKey = `quote:${provider}:${symbol.toUpperCase()}`;
+  const cachedQuote = getCachedResponse<Record<string, unknown>>(quoteCacheKey);
+  if (cachedQuote) {
+    res.json(cachedQuote);
+    return;
+  }
+
   try {
     if (provider === 'twelvedata') {
       const url = new URL('https://api.twelvedata.com/quote');
-      url.searchParams.set('symbol', symbol);
+      url.searchParams.set('symbol', normalizeTwelveDataSymbol(symbol));
       url.searchParams.set('apikey', apiKey);
       const upstream = await fetchWithTimeout(url.toString());
       const data = (await upstream.json()) as {
+        status?: string;
+        code?: number;
+        message?: string;
         close?: string;
         open?: string;
         high?: string;
@@ -485,7 +615,13 @@ app.get('/api/market/quote', async (req, res) => {
         change?: string;
         percent_change?: string;
       };
-      res.json({
+      if (!upstream.ok || data.status === 'error') {
+        res.status(data.code === 429 || upstream.status === 429 ? 429 : 400).json({
+          error: data.message || 'Twelve Data quote failed',
+        });
+        return;
+      }
+      const payload = {
         price: Number(data.close || 0),
         open: Number(data.open || 0),
         high: Number(data.high || 0),
@@ -493,7 +629,9 @@ app.get('/api/market/quote', async (req, res) => {
         volume: Number(data.volume || 0),
         change: Number(data.change || 0),
         changePercent: Number(data.percent_change || 0),
-      });
+      };
+      setCachedResponse(quoteCacheKey, payload, 15_000);
+      res.json(payload);
       return;
     }
 
@@ -510,7 +648,11 @@ app.get('/api/market/quote', async (req, res) => {
         d?: number;
         dp?: number;
       };
-      res.json({
+      if (!upstream.ok) {
+        res.status(upstream.status).json({ error: 'Finnhub quote failed' });
+        return;
+      }
+      const payload = {
         price: data.c || 0,
         open: data.o || 0,
         high: data.h || 0,
@@ -518,7 +660,9 @@ app.get('/api/market/quote', async (req, res) => {
         volume: 0,
         change: data.d || 0,
         changePercent: data.dp || 0,
-      });
+      };
+      setCachedResponse(quoteCacheKey, payload, 15_000);
+      res.json(payload);
       return;
     }
 

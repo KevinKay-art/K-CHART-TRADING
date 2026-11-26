@@ -62,11 +62,14 @@ export async function searchAllSymbols(
 
   // Include matching preset non-crypto symbols so users see stocks/forex/indices even before configuring keys
   const q = query.trim().toUpperCase();
+  const qNoSlash = q.replace(/\//g, '');
   const presetMatches = PRESET_EQUITY_FOREX_SYMBOLS.filter((item) => {
     if (activeProviderFilter !== 'all' && item.provider !== activeProviderFilter) return false;
     if (!q) return true;
+    const symUpper = item.symbol.toUpperCase();
     return (
-      item.symbol.toUpperCase().includes(q) ||
+      symUpper.includes(q) ||
+      symUpper.replace(/\//g, '').includes(qNoSlash) ||
       item.name.toUpperCase().includes(q) ||
       item.assetClass.toUpperCase().includes(q)
     );

@@ -191,6 +191,10 @@ export const ChartPane: React.FC<ChartPaneProps> = ({ pane, isActive, totalPanes
   chartSettingsRef.current = chartSettings;
   const indicatorsRef = useRef(pane.indicators);
   indicatorsRef.current = pane.indicators;
+  const symbolRef = useRef(pane.symbol);
+  symbolRef.current = pane.symbol;
+  const timeframeRef = useRef(pane.timeframe);
+  timeframeRef.current = pane.timeframe;
 
   // Active candles considering Bar Replay mode on the active pane
   const getVisibleCandles = (): Candle[] => {
@@ -723,20 +727,23 @@ export const ChartPane: React.FC<ChartPaneProps> = ({ pane, isActive, totalPanes
     // Lazy-load older historical candles when scrolling left
     chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
       if (!range) return;
+      const curSymbol = symbolRef.current;
+      const curTimeframe = timeframeRef.current;
+      const minLenForOlder = curSymbol.provider === 'binance' ? 1 : 100;
       if (
-        range.from < 20 &&
+        range.from < 5 &&
         !loadingOlderRef.current &&
         !noMoreOlderRef.current &&
-        candlesRef.current.length > 0 &&
+        candlesRef.current.length >= minLenForOlder &&
         !useTerminalStore.getState().replay.active
       ) {
         loadingOlderRef.current = true;
         const oldest = candlesRef.current[0];
-        const provider = getDataProvider(pane.symbol.provider);
+        const provider = getDataProvider(curSymbol.provider);
         provider
           .getHistory({
-            symbol: pane.symbol.symbol,
-            interval: pane.timeframe,
+            symbol: curSymbol.symbol,
+            interval: curTimeframe,
             limit: 500,
             endTimeMs: oldest.time * 1000 - 1,
           })
