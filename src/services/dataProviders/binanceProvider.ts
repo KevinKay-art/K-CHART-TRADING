@@ -56,16 +56,30 @@ type RawKline = [
 ];
 
 function parseKlines(rows: RawKline[]): Candle[] {
-  return rows
-    .map((r) => ({
+  const byTime = new Map<number, Candle>();
+  for (const r of rows) {
+    const c: Candle = {
       time: Math.floor(r[0] / 1000),
       open: Number(r[1]),
       high: Number(r[2]),
       low: Number(r[3]),
       close: Number(r[4]),
       volume: Number(r[5]),
-    }))
-    .filter((c) => Number.isFinite(c.time) && Number.isFinite(c.close));
+    };
+    if (
+      Number.isFinite(c.time) &&
+      Number.isFinite(c.open) &&
+      Number.isFinite(c.high) &&
+      Number.isFinite(c.low) &&
+      Number.isFinite(c.close)
+    ) {
+      byTime.set(c.time, {
+        ...c,
+        volume: Number.isFinite(c.volume) ? c.volume : 0,
+      });
+    }
+  }
+  return Array.from(byTime.values()).sort((a, b) => a.time - b.time);
 }
 
 async function fetchBinanceWithProxyFallback<T>(directUrl: string, proxyUrl: string): Promise<T> {

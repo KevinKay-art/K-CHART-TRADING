@@ -2,12 +2,10 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Bookmark, Check, Plus, Search, Star, Trash2, X } from 'lucide-react';
 import { INDICATOR_CATALOG } from '../indicators/catalog';
 import { searchAllSymbols } from '../services/dataProviders';
-import { loadLocalProviderKeys, saveLocalProviderKeys } from '../services/dataProviders/types';
 import { useTerminalStore } from '../store/useTerminalStore';
 import {
   AlertCondition,
   AssetClass,
-  DataProviderId,
   PriceSource,
   SymbolInfo,
   Timeframe,
@@ -105,7 +103,7 @@ export const SymbolSearchModal: React.FC = () => {
             <div className="p-8 text-center text-slate-400">Loading symbols…</div>
           ) : filtered.length === 0 ? (
             <div className="p-8 text-center text-slate-400">
-              No matching symbols found. Configure Twelve Data / Finnhub / Polygon API keys in Settings for full equity & FX search.
+              No matching symbols found. Try searching a Binance crypto pair (e.g. BTCUSDT, ETHUSDT, SOLUSDT) or a ticker symbol.
             </div>
           ) : (
             filtered.map((sym) => (
@@ -715,32 +713,14 @@ export const AlertModal: React.FC = () => {
 };
 
 /* ------------------------------------------------------------------
-   5. Chart & Data Provider Settings Modal
+   5. Chart Settings Modal
 ------------------------------------------------------------------- */
 export const SettingsModal: React.FC = () => {
   const open = useTerminalStore((s) => s.settingsModalOpen);
-  const tab = useTerminalStore((s) => s.settingsModalTab);
   const setOpen = useTerminalStore((s) => s.setSettingsModalOpen);
   const chartSettings = useTerminalStore((s) => s.chartSettings);
   const updateChartSettings = useTerminalStore((s) => s.updateChartSettings);
   const resetChartSettings = useTerminalStore((s) => s.resetChartSettings);
-  const pushToast = useTerminalStore((s) => s.pushToast);
-
-  const [activeTab, setActiveTab] = useState<'chart' | 'providers'>(tab);
-  const [keys, setKeys] = useState(() => loadLocalProviderKeys());
-  const [serverStatus, setServerStatus] = useState<Record<string, boolean>>({});
-
-  useEffect(() => {
-    setActiveTab(tab);
-  }, [tab]);
-
-  useEffect(() => {
-    if (!open) return;
-    fetch('/api/providers/status')
-      .then((r) => r.json())
-      .then((d) => setServerStatus(d))
-      .catch(() => {});
-  }, [open]);
 
   if (!open) return null;
 
@@ -755,40 +735,14 @@ export const SettingsModal: React.FC = () => {
       >
         <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-[#2A2E39]">
           <span className="text-sm font-semibold text-slate-900 dark:text-[#F8FAFC]">
-            Terminal Settings
+            Chart Settings
           </span>
           <button type="button" onClick={() => setOpen(false)} className="text-slate-400 hover:text-white">
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        <div className="flex border-b border-slate-200 dark:border-[#2A2E39] px-4 gap-4">
-          <button
-            type="button"
-            onClick={() => setActiveTab('chart')}
-            className={`py-2.5 font-medium border-b-2 ${
-              activeTab === 'chart'
-                ? 'border-[#2962FF] text-[#2962FF]'
-                : 'border-transparent text-slate-400'
-            }`}
-          >
-            Symbol & Canvas
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('providers')}
-            className={`py-2.5 font-medium border-b-2 ${
-              activeTab === 'providers'
-                ? 'border-[#2962FF] text-[#2962FF]'
-                : 'border-transparent text-slate-400'
-            }`}
-          >
-            Data Providers & Keys
-          </button>
-        </div>
-
-        {activeTab === 'chart' ? (
-          <div className="p-4 space-y-3 max-h-[65vh] overflow-y-auto">
+        <div className="p-4 space-y-3 max-h-[65vh] overflow-y-auto">
             <div className="grid grid-cols-2 gap-2.5">
               {(
                 [
@@ -921,64 +875,7 @@ export const SettingsModal: React.FC = () => {
                 Apply
               </button>
             </div>
-          </div>
-        ) : (
-          <div className="p-4 space-y-3 max-h-[65vh] overflow-y-auto">
-            <div className="p-2.5 rounded bg-[#26A69A]/10 border border-[#26A69A]/30 text-[11px]">
-              <strong>Binance Spot (Crypto):</strong> Active by default with zero API key required.
-            </div>
-
-            {(
-              [
-                ['twelvedata', 'Twelve Data (Stocks / Forex / Indices / Commodities)'],
-                ['finnhub', 'Finnhub (Equities & Forex)'],
-                ['polygon', 'Polygon.io (US Stocks, Options, FX)'],
-              ] as Array<[DataProviderId, string]>
-            ).map(([pid, label]) => (
-              <div key={pid} className="space-y-1">
-                <div className="flex items-center justify-between">
-                  <span className="font-medium">{label}</span>
-                  <span
-                    className={`text-[10px] font-medium ${
-                      serverStatus[pid] || keys[pid] ? 'text-[#26A69A]' : 'text-slate-400'
-                    }`}
-                  >
-                    {serverStatus[pid]
-                      ? 'Configured via Server .env'
-                      : keys[pid]
-                      ? 'Custom Key Saved'
-                      : 'Not Configured'}
-                  </span>
-                </div>
-                <input
-                  type="password"
-                  value={keys[pid] || ''}
-                  onChange={(e) => setKeys({ ...keys, [pid]: e.target.value })}
-                  placeholder={`Optional ${pid} API key (proxied via /api/market/*)`}
-                  className="w-full px-2.5 py-1.5 rounded border border-slate-200 dark:border-[#2A2E39] bg-slate-50 dark:bg-[#131722] font-mono-num"
-                />
-              </div>
-            ))}
-
-            <div className="flex justify-end gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => {
-                  saveLocalProviderKeys(keys);
-                  pushToast({
-                    title: 'Provider Keys Saved',
-                    message: 'Requests route securely through backend proxy.',
-                    tone: 'success',
-                  });
-                  setOpen(false);
-                }}
-                className="px-4 py-1.5 rounded bg-[#2962FF] text-white font-medium"
-              >
-                Save Keys
-              </button>
-            </div>
-          </div>
-        )}
+        </div>
       </div>
     </div>
   );

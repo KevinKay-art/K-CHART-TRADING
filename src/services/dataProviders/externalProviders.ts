@@ -1,14 +1,5 @@
 import { Candle, DataProviderId, SymbolInfo, Timeframe } from '../../types/chart';
-import { DataProvider, HistoryRequestParams, loadLocalProviderKeys, SubscribeCallbacks } from './types';
-
-function buildHeaders(provider: DataProviderId): HeadersInit {
-  const localKeys = loadLocalProviderKeys();
-  const key = localKeys[provider];
-  if (key) {
-    return { 'x-provider-api-key': key };
-  }
-  return {};
-}
+import { DataProvider, HistoryRequestParams, SubscribeCallbacks } from './types';
 
 class ProxyMarketDataProvider implements DataProvider {
   readonly id: DataProviderId;
@@ -28,12 +19,27 @@ class ProxyMarketDataProvider implements DataProvider {
     if (params.limit) url.searchParams.set('limit', String(params.limit));
     if (params.endTimeMs) url.searchParams.set('endTime', String(Math.floor(params.endTimeMs)));
 
-    const res = await fetch(url.toString(), { headers: buildHeaders(this.id) });
+    const res = await fetch(url.toString());
     const data = (await res.json()) as { candles?: Candle[]; error?: string };
     if (!res.ok) {
       throw new Error(data.error || `${this.name} error (${res.status})`);
     }
-    return data.candles || [];
+    const byTime = new Map<number, Candle>();
+    for (const c of data.candles || []) {
+      if (
+        Number.isFinite(c.time) &&
+        Number.isFinite(c.open) &&
+        Number.isFinite(c.high) &&
+        Number.isFinite(c.low) &&
+        Number.isFinite(c.close)
+      ) {
+        byTime.set(c.time, {
+          ...c,
+          volume: Number.isFinite(c.volume) ? c.volume : 0,
+        });
+      }
+    }
+    return Array.from(byTime.values()).sort((a, b) => a.time - b.time);
   }
 
   subscribe(symbol: string, interval: Timeframe, callbacks: SubscribeCallbacks): () => void {
@@ -47,7 +53,7 @@ class ProxyMarketDataProvider implements DataProvider {
         const url = new URL('/api/market/quote', window.location.origin);
         url.searchParams.set('provider', this.id);
         url.searchParams.set('symbol', symbol);
-        const res = await fetch(url.toString(), { headers: buildHeaders(this.id) });
+        const res = await fetch(url.toString());
         if (!res.ok) {
           callbacks.onStatus(res.status === 429 ? 'reconnecting' : 'offline');
           return;
@@ -121,7 +127,7 @@ class ProxyMarketDataProvider implements DataProvider {
     const url = new URL('/api/market/search', window.location.origin);
     url.searchParams.set('provider', this.id);
     url.searchParams.set('q', query.trim());
-    const res = await fetch(url.toString(), { headers: buildHeaders(this.id) });
+    const res = await fetch(url.toString());
     if (!res.ok) return [];
     const data = (await res.json()) as { results?: SymbolInfo[] };
     return data.results || [];

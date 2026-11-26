@@ -71,6 +71,31 @@ function mapLineStyle(style: 'solid' | 'dashed' | 'dotted'): LineStyle {
   return LineStyle.Solid;
 }
 
+function normalizeCandles(list: Candle[]): Candle[] {
+  const byTime = new Map<number, Candle>();
+  for (const c of list) {
+    if (
+      !c ||
+      !Number.isFinite(c.time) ||
+      !Number.isFinite(c.open) ||
+      !Number.isFinite(c.high) ||
+      !Number.isFinite(c.low) ||
+      !Number.isFinite(c.close)
+    ) {
+      continue;
+    }
+    byTime.set(c.time, {
+      time: c.time,
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+      volume: Number.isFinite(c.volume) ? c.volume : 0,
+    });
+  }
+  return Array.from(byTime.values()).sort((a, b) => a.time - b.time);
+}
+
 export const ChartPane: React.FC<ChartPaneProps> = ({ pane, isActive, totalPanes }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -159,6 +184,13 @@ export const ChartPane: React.FC<ChartPaneProps> = ({ pane, isActive, totalPanes
     () => drawingsBySymbol[symbolKey] || [],
     [drawingsBySymbol, symbolKey]
   );
+
+  const chartTypeRef = useRef(pane.chartType);
+  chartTypeRef.current = pane.chartType;
+  const chartSettingsRef = useRef(chartSettings);
+  chartSettingsRef.current = chartSettings;
+  const indicatorsRef = useRef(pane.indicators);
+  indicatorsRef.current = pane.indicators;
 
   // Active candles considering Bar Replay mode on the active pane
   const getVisibleCandles = (): Candle[] => {
@@ -269,7 +301,7 @@ export const ChartPane: React.FC<ChartPaneProps> = ({ pane, isActive, totalPanes
     const chart = chartRef.current;
     if (!chart) return;
 
-    const activeIndicators = pane.indicators.filter((ind) => {
+    const activeIndicators = indicatorsRef.current.filter((ind) => {
       if (!ind.visible) return false;
       if (ind.timeframeVisibility !== 'all' && !ind.timeframeVisibility.includes(pane.timeframe)) {
         return false;
@@ -719,10 +751,10 @@ export const ChartPane: React.FC<ChartPaneProps> = ({ pane, isActive, totalPanes
               noMoreOlderRef.current = true;
               return;
             }
-            const merged = [...uniqueOlder, ...candlesRef.current].sort((a, b) => a.time - b.time);
+            const merged = normalizeCandles([...uniqueOlder, ...candlesRef.current]);
             candlesRef.current = merged;
             setPaneCandles(pane.id, merged);
-            pushSeriesData(merged, pane.chartType);
+            pushSeriesData(merged, chartTypeRef.current);
             syncIndicators(merged);
             syncDrawingPrimitive();
           })
@@ -919,11 +951,12 @@ export const ChartPane: React.FC<ChartPaneProps> = ({ pane, isActive, totalPanes
         interval: pane.timeframe,
         limit: 1000,
       })
-      .then((history) => {
+      .then((rawHistory) => {
         if (cancelled) return;
+        const history = normalizeCandles(rawHistory);
         candlesRef.current = history;
         setPaneCandles(pane.id, history);
-        pushSeriesData(history, pane.chartType);
+        pushSeriesData(history, chartTypeRef.current);
         syncIndicators(history);
         syncDrawingPrimitive();
         if (chartRef.current && history.length > 0) {
@@ -953,79 +986,113 @@ export const ChartPane: React.FC<ChartPaneProps> = ({ pane, isActive, totalPanes
                 rafTickRef.current = null;
                 const tick = pendingTickRef.current;
                 pendingTickRef.current = null;
-                if (!tick) return;
+                if (!tick || cancelled) return;
+
+                const incomingCandle = tick.candle;
+                if (
+                  !Number.isFinite(incomingCandle.time) ||
+                  !Number.isFinite(incomingCandle.open) ||
+                  !Number.isFinite(incomingCandle.high) ||
+                  !Number.isFinite(incomingCandle.low) ||
+                  !Number.isFinite(incomingCandle.close)
+                ) {
+                  return;
+                }
 
                 const arr = candlesRef.current;
                 const last = arr[arr.length - 1];
-                const prevPrice = last ? last.close : tick.candle.open;
-                const prevTime = last ? last.time : tick.candle.time;
-
-                if (!last || tick.candle.time > last.time) {
-                  arr.push(tick.candle);
-                } else if (tick.candle.time === last.time) {
-                  arr[arr.length - 1] = tick.candle;
+                // Never update with a candle older than the latest bar (lightweight-charts rejects time < last.time)
+                if (last && incomingCandle.time < last.time) {
+                  return;
                 }
+
+                const prevPrice = last ? last.close : incomingCandle.open;
+                const prevTime = last ? last.time : incomingCandle.time;
+                const wasEmpty = arr.length === 0;
+
+                const sanitizedCandle: Candle = {
+                  ...incomingCandle,
+                  volume: Number.isFinite(incomingCandle.volume) ? incomingCandle.volume : 0,
+                };
+
+                if (!last || sanitizedCandle.time > last.time) {
+                  arr.push(sanitizedCandle);
+                } else {
+                  arr[arr.length - 1] = sanitizedCandle;
+                }
+
+                const activeChartType = chartTypeRef.current;
+                const activeSettings = chartSettingsRef.current;
 
                 // Update chart incrementally via series.update() for 60fps performance
                 const main = mainSeriesRef.current;
                 const vol = volumeSeriesRef.current;
                 if (main) {
-                  if (
-                    pane.chartType === 'candlestick' ||
-                    pane.chartType === 'hollow' ||
-                    pane.chartType === 'bar'
-                  ) {
-                    main.update({
-                      time: tick.candle.time as Time,
-                      open: tick.candle.open,
-                      high: tick.candle.high,
-                      low: tick.candle.low,
-                      close: tick.candle.close,
-                    });
-                  } else if (pane.chartType === 'heikinAshi') {
-                    const ha = computeHeikinAshi(arr);
-                    const lastHa = ha[ha.length - 1];
-                    if (lastHa) {
-                      main.update({
-                        time: lastHa.time as Time,
-                        open: lastHa.open,
-                        high: lastHa.high,
-                        low: lastHa.low,
-                        close: lastHa.close,
-                      });
-                    }
-                  } else if (pane.chartType === 'histogram') {
-                    main.update({
-                      time: tick.candle.time as Time,
-                      value: tick.candle.close,
-                      color:
-                        tick.candle.close >= tick.candle.open
-                          ? chartSettings.upColor
-                          : chartSettings.downColor,
-                    });
+                  if (wasEmpty) {
+                    pushSeriesData(arr, activeChartType);
                   } else {
-                    main.update({
-                      time: tick.candle.time as Time,
-                      value: tick.candle.close,
-                    });
+                    try {
+                      if (
+                        activeChartType === 'candlestick' ||
+                        activeChartType === 'hollow' ||
+                        activeChartType === 'bar'
+                      ) {
+                        main.update({
+                          time: sanitizedCandle.time as Time,
+                          open: sanitizedCandle.open,
+                          high: sanitizedCandle.high,
+                          low: sanitizedCandle.low,
+                          close: sanitizedCandle.close,
+                        });
+                      } else if (activeChartType === 'heikinAshi') {
+                        const ha = computeHeikinAshi(arr);
+                        const lastHa = ha[ha.length - 1];
+                        if (lastHa) {
+                          main.update({
+                            time: lastHa.time as Time,
+                            open: lastHa.open,
+                            high: lastHa.high,
+                            low: lastHa.low,
+                            close: lastHa.close,
+                          });
+                        }
+                      } else if (activeChartType === 'histogram') {
+                        main.update({
+                          time: sanitizedCandle.time as Time,
+                          value: sanitizedCandle.close,
+                          color:
+                            sanitizedCandle.close >= sanitizedCandle.open
+                              ? activeSettings.upColor
+                              : activeSettings.downColor,
+                        });
+                      } else {
+                        main.update({
+                          time: sanitizedCandle.time as Time,
+                          value: sanitizedCandle.close,
+                        });
+                      }
+
+                      if (vol && activeSettings.showVolumeInMainPane) {
+                        vol.update({
+                          time: sanitizedCandle.time as Time,
+                          value: sanitizedCandle.volume,
+                          color:
+                            sanitizedCandle.close >= sanitizedCandle.open
+                              ? `${activeSettings.upColor}66`
+                              : `${activeSettings.downColor}66`,
+                        });
+                      }
+                    } catch {
+                      // Fallback to full series sync if series state was reset
+                      pushSeriesData(arr, activeChartType);
+                    }
                   }
 
-                  const isUp = tick.candle.close >= tick.candle.open;
+                  const isUp = sanitizedCandle.close >= sanitizedCandle.open;
                   main.applyOptions({
-                    priceLineColor: isUp ? chartSettings.upColor : chartSettings.downColor,
+                    priceLineColor: isUp ? activeSettings.upColor : activeSettings.downColor,
                   });
-                  setLastPriceY(main.priceToCoordinate(tick.candle.close));
-                }
-
-                if (vol && chartSettings.showVolumeInMainPane) {
-                  vol.update({
-                    time: tick.candle.time as Time,
-                    value: tick.candle.volume,
-                    color:
-                      tick.candle.close >= tick.candle.open
-                        ? `${chartSettings.upColor}66`
-                        : `${chartSettings.downColor}66`,
-                  });
+                  setLastPriceY(main.priceToCoordinate(sanitizedCandle.close));
                 }
 
                 setPaneCandles(pane.id, arr);
@@ -1034,9 +1101,9 @@ export const ChartPane: React.FC<ChartPaneProps> = ({ pane, isActive, totalPanes
                 evaluateAlertsForPrice(
                   pane.symbol.symbol,
                   prevPrice,
-                  tick.candle.close,
+                  sanitizedCandle.close,
                   prevTime,
-                  tick.candle.time
+                  sanitizedCandle.time
                 );
               });
             }
@@ -1850,15 +1917,6 @@ export const ChartPane: React.FC<ChartPaneProps> = ({ pane, isActive, totalPanes
           <div className="text-sm font-semibold text-[#EF5350]">Market Data Unavailable</div>
           <p className="text-xs text-slate-600 dark:text-[#9CA3AF] max-w-md">{loadError}</p>
           <div className="flex items-center gap-2">
-            {pane.symbol.provider !== 'binance' && (
-              <button
-                type="button"
-                onClick={() => setSettingsModalOpen(true, 'providers')}
-                className="px-3 py-1.5 rounded bg-[#2962FF] text-white text-xs font-medium hover:bg-[#1E53E5]"
-              >
-                Configure API Key
-              </button>
-            )}
             <button
               type="button"
               onClick={() => {
@@ -1943,7 +2001,7 @@ export const ChartPane: React.FC<ChartPaneProps> = ({ pane, isActive, totalPanes
           <button
             type="button"
             onClick={() => {
-              setSettingsModalOpen(true, 'chart');
+              setSettingsModalOpen(true);
               setContextMenu(null);
             }}
             className="w-full text-left px-3 py-1.5 hover:bg-slate-100 dark:hover:bg-[#2A2E39]"

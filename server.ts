@@ -35,14 +35,7 @@ function sanitizeParam(value: unknown, regex: RegExp, fallback = ''): string {
   return regex.test(trimmed) ? trimmed : fallback;
 }
 
-function getProviderKey(
-  provider: string,
-  req: express.Request
-): string {
-  const headerKey = req.header('x-provider-api-key');
-  if (typeof headerKey === 'string' && headerKey.trim().length > 0 && headerKey.trim().length <= 128) {
-    return headerKey.trim();
-  }
+function getProviderKey(provider: string): string {
   if (provider === 'twelvedata') return process.env.TWELVEDATA_API_KEY || '';
   if (provider === 'finnhub') return process.env.FINNHUB_API_KEY || '';
   if (provider === 'polygon') return process.env.POLYGON_API_KEY || '';
@@ -247,10 +240,10 @@ app.get('/api/market/history', async (req, res) => {
     return;
   }
 
-  const apiKey = getProviderKey(provider, req);
+  const apiKey = getProviderKey(provider);
   if (!apiKey) {
     res.status(401).json({
-      error: `API key not configured for ${provider}. Open Settings -> Data Providers to add your key or set it in .env.`,
+      error: `Market data provider '${provider}' is not configured on the server.`,
       code: 'MISSING_API_KEY',
     });
     return;
@@ -381,9 +374,9 @@ app.get('/api/market/search', async (req, res) => {
     return;
   }
 
-  const apiKey = getProviderKey(provider, req);
+  const apiKey = getProviderKey(provider);
   if (!apiKey) {
-    res.status(401).json({ error: 'Missing API key', code: 'MISSING_API_KEY' });
+    res.status(401).json({ error: 'Provider not configured on server', code: 'MISSING_API_KEY' });
     return;
   }
 
@@ -471,9 +464,9 @@ app.get('/api/market/quote', async (req, res) => {
     res.status(400).json({ error: 'Missing provider or symbol' });
     return;
   }
-  const apiKey = getProviderKey(provider, req);
+  const apiKey = getProviderKey(provider);
   if (!apiKey) {
-    res.status(401).json({ error: 'Missing API key', code: 'MISSING_API_KEY' });
+    res.status(401).json({ error: 'Provider not configured on server', code: 'MISSING_API_KEY' });
     return;
   }
 

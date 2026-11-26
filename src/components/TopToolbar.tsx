@@ -10,7 +10,6 @@ import {
   Download,
   FolderOpen,
   Grid2x2,
-  KeyRound,
   LayoutGrid,
   Maximize2,
   Minimize2,
@@ -546,18 +545,8 @@ export const TopToolbar: React.FC = () => {
 
         <button
           type="button"
-          onClick={() => setSettingsModalOpen(true, 'providers')}
-          title="Data Provider API Keys"
-          className="flex items-center gap-1 px-2 py-1.5 rounded bg-[#2962FF]/10 hover:bg-[#2962FF]/20 text-[#2962FF] font-medium whitespace-nowrap"
-        >
-          <KeyRound className="w-3.5 h-3.5 shrink-0" />
-          <span className="hidden sm:inline">API Keys</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setSettingsModalOpen(true, 'chart')}
-          title="Chart & Provider Settings"
+          onClick={() => setSettingsModalOpen(true)}
+          title="Chart Settings"
           className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-[#2A2E39] text-slate-600 dark:text-[#D1D4DC]"
         >
           <Settings className="w-4 h-4" />

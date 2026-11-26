@@ -291,7 +291,6 @@ interface TerminalState {
   symbolSearchOpen: boolean;
   indicatorsModalOpen: boolean;
   settingsModalOpen: boolean;
-  settingsModalTab: 'chart' | 'providers';
   alertsModalOpen: boolean;
   alertsModalInitialPrice: number | null;
   alertsModalDrawingId: string | null;
@@ -405,7 +404,7 @@ interface TerminalState {
   // Modals
   setSymbolSearchOpen: (open: boolean) => void;
   setIndicatorsModalOpen: (open: boolean) => void;
-  setSettingsModalOpen: (open: boolean, tab?: 'chart' | 'providers') => void;
+  setSettingsModalOpen: (open: boolean) => void;
   setAlertsModalOpen: (open: boolean, initialPrice?: number | null, drawingId?: string | null) => void;
   setLayoutsModalOpen: (open: boolean) => void;
   setEditingIndicatorId: (id: string | null) => void;
@@ -473,7 +472,6 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   symbolSearchOpen: false,
   indicatorsModalOpen: false,
   settingsModalOpen: false,
-  settingsModalTab: 'chart',
   alertsModalOpen: false,
   alertsModalInitialPrice: null,
   alertsModalDrawingId: null,
@@ -1218,8 +1216,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
 
   setSymbolSearchOpen: (symbolSearchOpen) => set({ symbolSearchOpen }),
   setIndicatorsModalOpen: (indicatorsModalOpen) => set({ indicatorsModalOpen }),
-  setSettingsModalOpen: (settingsModalOpen, tab = 'chart') =>
-    set({ settingsModalOpen, settingsModalTab: tab }),
+  setSettingsModalOpen: (settingsModalOpen) => set({ settingsModalOpen }),
   setAlertsModalOpen: (alertsModalOpen, initialPrice = null, drawingId = null) =>
     set({
       alertsModalOpen,
